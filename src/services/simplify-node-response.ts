@@ -71,6 +71,7 @@ export interface SimplifiedDesign {
   components: Record<string, SimplifiedComponentDefinition>;
   componentSets: Record<string, SimplifiedComponentSetDefinition>;
   globalVars: GlobalVars;
+  globalTypography: GlobalVars;
 }
 
 export interface ComponentProperties {
@@ -82,6 +83,8 @@ export interface ComponentProperties {
 export interface SimplifiedNode {
   id: string;
   name: string;
+  DSComponentName?: string; // For instances of components, the name of the component
+  DSTypography?: string; // For text nodes, the name of the typography style
   type: string; // e.g. FRAME, TEXT, INSTANCE, RECTANGLE, etc.
   // geometry
   boundingBox?: BoundingBox;
@@ -140,19 +143,26 @@ export interface ColorValue {
 export function parseFigmaResponse(data: GetFileResponse | GetFileNodesResponse): SimplifiedDesign {
   const aggregatedComponents: Record<string, Component> = {};
   const aggregatedComponentSets: Record<string, ComponentSet> = {};
+  const aggregatedStyles: Record<StyleId, StyleTypes> = {};
   let nodesToParse: Array<FigmaDocumentNode>;
 
   if ("nodes" in data) {
     // GetFileNodesResponse
     const nodeResponses = Object.values(data.nodes); // Compute once
     nodeResponses.forEach((nodeResponse) => {
-      if (nodeResponse.components) {
-        Object.assign(aggregatedComponents, nodeResponse.components);
-      }
-      if (nodeResponse.componentSets) {
-        Object.assign(aggregatedComponentSets, nodeResponse.componentSets);
+      // if (nodeResponse.components) {
+      //   Object.assign(aggregatedComponents, nodeResponse.components);
+      // }
+      // if (nodeResponse.componentSets) {
+      //   Object.assign(aggregatedComponentSets, nodeResponse.componentSets);
+      // }
+      if (nodeResponse.styles) {
+        console.log("hello here is the styles", nodeResponse.styles);
+
+        Object.assign(aggregatedStyles, nodeResponse.styles);
       }
     });
+
     nodesToParse = nodeResponses.map((n) => n.document);
   } else {
     // GetFileResponse
@@ -170,9 +180,13 @@ export function parseFigmaResponse(data: GetFileResponse | GetFileNodesResponse)
     styles: {},
   };
 
+  let globalTypography: GlobalVars = {
+    styles: aggregatedStyles,
+  };
+
   const simplifiedNodes: SimplifiedNode[] = nodesToParse
     .filter(isVisible)
-    .map((n) => parseNode(globalVars, n))
+    .map((n) => parseNode(globalVars, globalTypography, n))
     .filter((child) => child !== null && child !== undefined);
 
   const simplifiedDesign: SimplifiedDesign = {
@@ -183,6 +197,7 @@ export function parseFigmaResponse(data: GetFileResponse | GetFileNodesResponse)
     components: sanitizedComponents,
     componentSets: sanitizedComponentSets,
     globalVars,
+    globalTypography: { styles: {} },
   };
 
   return removeEmptyKeys(simplifiedDesign);
@@ -232,6 +247,7 @@ function findOrCreateVar(globalVars: GlobalVars, value: any, prefix: string): St
 
 function parseNode(
   globalVars: GlobalVars,
+  globalTypography: GlobalVars,
   n: FigmaDocumentNode,
   parent?: FigmaDocumentNode,
 ): SimplifiedNode | null {
@@ -244,9 +260,13 @@ function parseNode(
   };
 
   if (type === "INSTANCE") {
-    if (hasValue("componentId", n)) {
-      simplified.componentId = n.componentId;
+    if (hasValue("name", n)) {
+      simplified.DSComponentName = n.name;
     }
+
+    // if (hasValue("componentId", n)) {
+    //   simplified.componentId = n.componentId;
+    // }
 
     // Add specific properties for instances of components
     if (hasValue("componentProperties", n)) {
@@ -282,21 +302,46 @@ function parseNode(
     simplified.textStyle = findOrCreateVar(globalVars, textStyle, "style");
   }
 
+  // // typography
+  if (hasValue("styles", n)) {
+    const textStyleId = (n.styles as Record<string, string>)?.["text"];
+
+    console.log({
+      textStyleId,
+      globalTypography,
+      myData: globalTypography.styles[textStyleId as StyleId],
+    });
+
+    if (textStyleId && globalTypography.styles[textStyleId as StyleId]) {
+      // If the style already exists in global typography, use it
+      const style = globalTypography.styles[textStyleId as StyleId];
+
+      console.log("Using existing typography style:", style);
+
+      simplified.DSTypography =
+        typeof style === "object" && style !== null && "name" in style
+          ? (style.name as string)
+          : textStyleId;
+    } else {
+      simplified.DSTypography = textStyleId;
+    }
+  }
+
   // fills & strokes
   if (hasValue("fills", n) && Array.isArray(n.fills) && n.fills.length) {
     // const fills = simplifyFills(n.fills.map(parsePaint));
     const fills = n.fills.map(parsePaint);
-    simplified.fills = findOrCreateVar(globalVars, fills, "fill");
+    // simplified.fills = findOrCreateVar(globalVars, fills, "fill");
   }
 
   const strokes = buildSimplifiedStrokes(n);
   if (strokes.colors.length) {
-    simplified.strokes = findOrCreateVar(globalVars, strokes, "stroke");
+    // simplified.strokes = findOrCreateVar(globalVars, strokes, "stroke");
   }
 
   const effects = buildSimplifiedEffects(n);
   if (Object.keys(effects).length) {
-    simplified.effects = findOrCreateVar(globalVars, effects, "effect");
+    // simplified.effects = findOrCreateVar(globalVars, effects, "effect");
   }
 
   // Process layout
@@ -329,7 +374,7 @@ function parseNode(
   if (hasValue("children", n) && n.children.length > 0) {
     const children = n.children
       .filter(isVisible)
-      .map((child) => parseNode(globalVars, child, n))
+      .map((child) => parseNode(globalVars, globalTypography, child, n))
       .filter((child) => child !== null && child !== undefined);
     if (children.length) {
       simplified.children = children;
